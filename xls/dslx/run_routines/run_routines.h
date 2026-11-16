@@ -315,6 +315,12 @@ absl::StatusOr<QuickCheckResults> DoQuickCheck(
     AbstractRunComparator* quickcheck_runner, int64_t seed,
     QuickCheckTestCases test_cases);
 
+// Returns whether the given test module member (`TestFunction*`, `TestProc*`,
+// or `ProcDef*`) has a `#[skip_if(...)]` attribute whose constexpr condition
+// evaluates to `true`.
+absl::StatusOr<bool> ShouldSkipTest(const ModuleMember& member,
+                                    const TypeInfo* type_info);
+
 }  // namespace xls::dslx
 
 #endif  // XLS_DSLX_RUN_ROUTINES_RUN_ROUTINES_H_

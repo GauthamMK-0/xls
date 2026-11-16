@@ -1149,5 +1149,29 @@ proc MyTestProc {
   EXPECT_TRUE(absl::StrContains(cloned_code, "proc MyTestProc"));
 }
 
+TEST(TestFunctionTransformerTest, TestFunctionWithSkipIfAttribute) {
+  constexpr std::string_view kProgram = R"(
+const FLAG: bool = true;
+
+proc P {
+}
+
+impl P {
+    fn new() -> Self { P {  } }
+}
+
+#[test]
+#[skip_if(FLAG)]
+fn main() {
+    let p = P::new();
+    p.spawn();
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(std::string cloned_code,
+                           TransformAndTypecheck(kProgram));
+  EXPECT_TRUE(absl::StrContains(
+      cloned_code, "#[test]\n#[skip_if(FLAG)]\nproc __test__proc__main"));
+}
+
 }  // namespace
 }  // namespace xls::dslx

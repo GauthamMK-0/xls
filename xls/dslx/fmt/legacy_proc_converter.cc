@@ -399,7 +399,7 @@ class LegacyProcConverter : public Formatter {
       return arena_.empty();
     }
     std::vector<DocRef> pieces;
-    pieces.reserve(3);
+    pieces.reserve(4);
     if (n.expected_fail_label().has_value()) {
       pieces.push_back(
           arena_.MakeText(absl::StrFormat("#[test(expected_fail_label=\"%s\")]",
@@ -408,6 +408,11 @@ class LegacyProcConverter : public Formatter {
       pieces.push_back(arena_.MakeText("#[test]"));
     }
     pieces.push_back(arena_.hard_line());
+    if (std::optional<const Attribute*> skip_if =
+            GetAttribute(n.proc(), AttributeKind::kSkipIf);
+        skip_if.has_value()) {
+      pieces.push_back(FormatAttribute(**skip_if));
+    }
     pieces.push_back(FormatProc(*n.proc(), /*is_test=*/true));
     return ConcatN(arena_, pieces);
   }

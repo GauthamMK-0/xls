@@ -21,10 +21,12 @@
 #include "absl/base/casts.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "xls/common/attribute_data.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_node_visitor_with_default.h"
+#include "xls/dslx/frontend/proc.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/type_system_v2/import_utils.h"
 
@@ -218,7 +220,18 @@ class Flattener : public AstNodeVisitorWithDefault {
   }
 
   absl::Status HandleProcDef(const ProcDef* node) override {
+    XLS_RETURN_IF_ERROR(VisitSkipIfAttribute(node));
     return HandleStructDefBaseInternal(node);
+  }
+
+  absl::Status HandleTestFunction(const TestFunction* node) override {
+    XLS_RETURN_IF_ERROR(VisitSkipIfAttribute(&node->fn()));
+    return DefaultHandler(node);
+  }
+
+  absl::Status HandleTestProc(const TestProc* node) override {
+    XLS_RETURN_IF_ERROR(VisitSkipIfAttribute(node->proc()));
+    return DefaultHandler(node);
   }
 
   absl::Status HandleTypeRef(const TypeRef* node) override {
@@ -314,6 +327,15 @@ class Flattener : public AstNodeVisitorWithDefault {
       XLS_RETURN_IF_ERROR(member->Accept(this));
     }
     nodes_.push_back(node);
+    return absl::OkStatus();
+  }
+
+  absl::Status VisitSkipIfAttribute(const AstNode* attributed_node) {
+    std::optional<Attribute*> skip_if =
+        GetAttribute(attributed_node, AttributeKind::kSkipIf);
+    if (skip_if.has_value() && (*skip_if)->expr().has_value()) {
+      return (*(*skip_if)->expr())->Accept(this);
+    }
     return absl::OkStatus();
   }
 

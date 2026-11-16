@@ -95,8 +95,14 @@ class AstCloner : public AstNodeVisitor {
   absl::Status HandleAttribute(const Attribute* n) override {
     XLS_RETURN_IF_ERROR(VisitChildren(n));
 
-    old_to_new_[n] = module(n)->Make<Attribute>(*n->GetSpan(), n->GetArgSpan(),
-                                                n->attribute_data());
+    std::optional<Expr*> new_expr;
+    if (n->expr().has_value()) {
+      new_expr = absl::down_cast<Expr*>(old_to_new_.at(*n->expr()));
+    }
+    Attribute* new_attr = module(n)->Make<Attribute>(
+        *n->GetSpan(), n->GetArgSpan(), n->attribute_data(), new_expr);
+    new_attr->SetParentage();
+    old_to_new_[n] = new_attr;
     return absl::OkStatus();
   }
 
@@ -1558,6 +1564,17 @@ class AstCloner : public AstNodeVisitor {
     return old_to_new_;
   }
 
+  absl::Status CloneRoot(const AstNode* root) {
+    XLS_ASSIGN_OR_RETURN(std::vector<Attribute*> new_attributes,
+                         CloneAttributes(root->attributes()));
+    XLS_RETURN_IF_ERROR(root->Accept(this));
+    const auto it = old_to_new_.find(root);
+    if (it != old_to_new_.end()) {
+      it->second->SetAttributes(new_attributes);
+    }
+    return absl::OkStatus();
+  }
+
  private:
   // Visits all the children of the given node, skipping those that have
   // already been processed.
@@ -1582,14 +1599,7 @@ class AstCloner : public AstNodeVisitor {
       return absl::OkStatus();
     }
 
-    XLS_ASSIGN_OR_RETURN(std::vector<Attribute*> new_attributes,
-                         CloneAttributes(node->attributes()));
-    XLS_RETURN_IF_ERROR(node->Accept(this));
-    const auto it = old_to_new_.find(node);
-    if (it != old_to_new_.end()) {
-      it->second->SetAttributes(new_attributes);
-    }
-    return absl::OkStatus();
+    return CloneRoot(node);
   }
 
   absl::StatusOr<std::vector<Attribute*>> CloneAttributes(
@@ -1763,7 +1773,7 @@ CloneAstAndGetAllPairs(const AstNode* root,
         {root, *root_replacement}};
   }
   AstCloner cloner(target_module, std::move(replacer));
-  XLS_RETURN_IF_ERROR(root->Accept(&cloner));
+  XLS_RETURN_IF_ERROR(cloner.CloneRoot(root));
   return cloner.old_to_new();
 }
 

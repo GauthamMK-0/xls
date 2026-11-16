@@ -47,6 +47,7 @@
 #include "xls/dslx/frontend/lambda_rewriter.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/frontend/proc.h"
 #include "xls/dslx/frontend/token_utils.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/import_routines.h"
@@ -740,6 +741,21 @@ class ConfiguredValueUsageVisitor : public AstNodeRecursiveVisitor {
         module_name_(module_name),
         import_data_(import_data) {}
 
+  absl::Status HandleTestFunction(const TestFunction* node) override {
+    XLS_RETURN_IF_ERROR(VisitSkipIfAttribute(&node->fn()));
+    return DefaultHandler(node);
+  }
+
+  absl::Status HandleTestProc(const TestProc* node) override {
+    XLS_RETURN_IF_ERROR(VisitSkipIfAttribute(node->proc()));
+    return DefaultHandler(node);
+  }
+
+  absl::Status HandleProcDef(const ProcDef* node) override {
+    XLS_RETURN_IF_ERROR(VisitSkipIfAttribute(node));
+    return DefaultHandler(node);
+  }
+
   absl::Status HandleInvocation(const Invocation* node) override {
     if (node->callee() != nullptr &&
         node->callee()->kind() == AstNodeKind::kNameRef &&
@@ -755,6 +771,15 @@ class ConfiguredValueUsageVisitor : public AstNodeRecursiveVisitor {
   }
 
  private:
+  absl::Status VisitSkipIfAttribute(const AstNode* node) {
+    std::optional<Attribute*> skip_if =
+        GetAttribute(node, AttributeKind::kSkipIf);
+    if (skip_if.has_value() && (*skip_if)->expr().has_value()) {
+      return (*(*skip_if)->expr())->Accept(this);
+    }
+    return absl::OkStatus();
+  }
+
   std::string_view module_name_;
   ImportData& import_data_;
 };

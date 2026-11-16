@@ -506,7 +506,11 @@ DocRef Formatter::FormatAttribute(const Attribute& n) {
   pieces.push_back(arena_.obracket());
   pieces.push_back(arena_.MakeText(AttributeKindToString(n.attribute_kind())));
 
-  if (!n.args().empty()) {
+  if (n.expr().has_value()) {
+    pieces.push_back(arena_.oparen());
+    pieces.push_back(FormatExpr(**n.expr()));
+    pieces.push_back(arena_.cparen());
+  } else if (!n.args().empty()) {
     pieces.push_back(arena_.oparen());
     const std::vector<AttributeData::Argument>& args = n.args();
     for (size_t i = 0; i < args.size(); ++i) {
@@ -2860,22 +2864,54 @@ DocRef Formatter::FormatProc(const Proc& n, bool is_test) {
 
 DocRef Formatter::FormatTestFunction(const TestFunction& n) {
   std::vector<DocRef> pieces;
-  pieces.push_back(arena_.MakeText("#[test]"));
-  pieces.push_back(arena_.hard_line());
+  if (GetAttribute(&n.fn(), AttributeKind::kTest).has_value()) {
+    for (const Attribute* attr : n.fn().attributes()) {
+      if (attr->attribute_kind() == AttributeKind::kTest ||
+          attr->attribute_kind() == AttributeKind::kSkipIf) {
+        pieces.push_back(FormatAttribute(*attr));
+      }
+    }
+  } else {
+    pieces.push_back(arena_.MakeText("#[test]"));
+    pieces.push_back(arena_.hard_line());
+    if (std::optional<const Attribute*> skip_if =
+            GetAttribute(&n.fn(), AttributeKind::kSkipIf);
+        skip_if.has_value()) {
+      pieces.push_back(FormatAttribute(**skip_if));
+    }
+  }
   pieces.push_back(FormatFunction(n.fn(), /*is_test=*/true));
   return ConcatN(arena_, pieces);
 }
 
 DocRef Formatter::FormatTestProc(const TestProc& n) {
   std::vector<DocRef> pieces;
-  if (n.expected_fail_label().has_value()) {
-    pieces.push_back(arena_.MakeText(
-        absl::StrFormat("#[test_proc(expected_fail_label=\"%s\")]",
-                        n.expected_fail_label().value())));
+  auto push_test_proc_attr = [&]() {
+    if (n.expected_fail_label().has_value()) {
+      pieces.push_back(arena_.MakeText(
+          absl::StrFormat("#[test_proc(expected_fail_label=\"%s\")]",
+                          n.expected_fail_label().value())));
+    } else {
+      pieces.push_back(arena_.MakeText("#[test_proc]"));
+    }
+    pieces.push_back(arena_.hard_line());
+  };
+  if (GetAttribute(n.proc(), AttributeKind::kTestProc).has_value()) {
+    for (const Attribute* attr : n.proc()->attributes()) {
+      if (attr->attribute_kind() == AttributeKind::kTestProc) {
+        push_test_proc_attr();
+      } else if (attr->attribute_kind() == AttributeKind::kSkipIf) {
+        pieces.push_back(FormatAttribute(*attr));
+      }
+    }
   } else {
-    pieces.push_back(arena_.MakeText("#[test_proc]"));
+    push_test_proc_attr();
+    if (std::optional<const Attribute*> skip_if =
+            GetAttribute(n.proc(), AttributeKind::kSkipIf);
+        skip_if.has_value()) {
+      pieces.push_back(FormatAttribute(**skip_if));
+    }
   }
-  pieces.push_back(arena_.hard_line());
   pieces.push_back(FormatProc(*n.proc(), /*is_test=*/true));
   return ConcatN(arena_, pieces);
 }

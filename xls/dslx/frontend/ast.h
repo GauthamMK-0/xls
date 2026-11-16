@@ -363,11 +363,13 @@ inline std::ostream& operator<<(std::ostream& os, TypeAnnotationKind kind) {
 class Attribute : public AstNode {
  public:
   Attribute(Module* owner, Span span, std::optional<Span> arg_span,
-            AttributeData attribute_data)
+            AttributeData attribute_data,
+            std::optional<Expr*> expr = std::nullopt)
       : AstNode(owner),
         span_(span),
         arg_span_(arg_span),
-        attribute_data_(std::move(attribute_data)) {}
+        attribute_data_(std::move(attribute_data)),
+        expr_(expr) {}
 
   AstNodeKind kind() const override { return AstNodeKind::kAttribute; }
   AttributeKind attribute_kind() const { return attribute_data_.kind(); }
@@ -389,9 +391,9 @@ class Attribute : public AstNode {
     attribute_data_.AddArgument(std::move(arg));
   }
 
-  std::vector<AstNode*> GetChildren(bool want_types) const override {
-    return {};
-  };
+  std::optional<Expr*> expr() const { return expr_; }
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override;
 
   std::string GetSingleLiteralText() const {
     CHECK_EQ(args().size(), 1);
@@ -406,6 +408,7 @@ class Attribute : public AstNode {
   const Span span_;
   const std::optional<Span> arg_span_;
   AttributeData attribute_data_;
+  std::optional<Expr*> expr_;
 };
 
 // Abstract base class for type annotations.
@@ -4294,9 +4297,7 @@ class TestFunction : public AstNode {
   }
 
   std::string_view GetNodeTypeName() const override { return "TestFunction"; }
-  std::string ToString() const override {
-    return absl::StrFormat("#[test]\n%s", fn_.ToString());
-  }
+  std::string ToString() const override;
 
   Function& fn() const { return fn_; }
   std::optional<Span> GetSpan() const override { return span(); }

@@ -1492,5 +1492,47 @@ BENCHMARK(BM_ChainedLetDagFeedingParametricInvocations)
     ->DenseRange(4, 14, 2)
     ->Range(16, 1024);
 
+TEST(TypecheckV2Test, SkipIfValidBoolConstExpr) {
+  EXPECT_THAT(R"(
+const A: bool = true;
+const B: bool = false;
+
+#[test]
+#[skip_if(A && !B)]
+fn test_skipped() { () }
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2Test, SkipIfNonBoolTypeFails) {
+  EXPECT_THAT(TypecheckV2(R"(
+#[test]
+#[skip_if(u32:5)]
+fn test_bad_type() { () }
+)"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(TypecheckV2Test, SkipIfNonConstExprFails) {
+  EXPECT_THAT(TypecheckV2(R"(
+#[test]
+#[skip_if(fail!("boom", true))]
+fn test_non_const() { () }
+)"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(TypecheckV2Test, SkipIfTrueStillTypechecksBody) {
+  EXPECT_THAT(TypecheckV2(R"(
+#[test]
+#[skip_if(true)]
+fn test_bad_body() {
+    let x: u32 = false;
+    ()
+}
+)"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
 }  // namespace
 }  // namespace xls::dslx

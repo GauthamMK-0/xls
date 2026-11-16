@@ -3353,5 +3353,38 @@ pub fn f(x: u32, flag: bool) -> u32 {
                             *cloned_f->tabulate_domains(), file_table));
 }
 
+TEST(AstClonerTest, SkipIfAttributeOnTestFunctionAndProc) {
+  constexpr std::string_view kProgram =
+      R"(const FLAG: bool = true;
+#[test]
+#[skip_if(FLAG)]
+fn my_test() {
+    ()
+}
+#[test]
+#[skip_if(!FLAG)]
+proc my_proc {
+    terminator: chan<bool> out,
+})";
+
+  FileTable file_table;
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Module> module,
+      ParseModule(kProgram, "fake_path.x", "the_module", file_table));
+
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> clone, CloneModule(*module));
+  EXPECT_EQ(kProgram, clone->ToString());
+  XLS_ASSERT_OK(VerifyClone(module.get(), clone.get(), file_table));
+
+  XLS_ASSERT_OK_AND_ASSIGN(TestFunction * orig_tf, module->GetTest("my_test"));
+  XLS_ASSERT_OK_AND_ASSIGN(TestFunction * cloned_tf, clone->GetTest("my_test"));
+  Attribute* orig_attr = *GetAttribute(&orig_tf->fn(), AttributeKind::kSkipIf);
+  Attribute* cloned_attr =
+      *GetAttribute(&cloned_tf->fn(), AttributeKind::kSkipIf);
+  EXPECT_NE(orig_attr, cloned_attr);
+  EXPECT_NE(*orig_attr->expr(), *cloned_attr->expr());
+  EXPECT_EQ((*cloned_attr->expr())->parent(), cloned_attr);
+}
+
 }  // namespace
 }  // namespace xls::dslx

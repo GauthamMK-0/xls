@@ -2134,6 +2134,33 @@ selecting multiple tests to run via regular expression:
 bazel test -c opt //xls/dslx/stdlib:apfloat_dslx_test --test_output=streamed --test_filter=.*f32.*
 ```
 
+#### Conditional Test Skipping
+
+Unit tests and test procs can be conditionally skipped based on a compile-time
+constant `bool` expression using the `#[skip_if(<expr>)]` attribute. This is
+useful when running test suites across different build or parameter
+configurations (such as `configured_value_or` values):
+
+```dslx
+const DATA_WIDTH: u32 = configured_value_or<u32>("data_width", u32:8);
+
+#[test]
+#[skip_if(DATA_WIDTH < u32:32)]
+fn test_wide_adder() {
+    const if DATA_WIDTH >= u32:32 {
+        let x = uN[DATA_WIDTH]:0xFFFF_FFFF;
+        assert_eq(x + uN[DATA_WIDTH]:1, uN[DATA_WIDTH]:0);
+    } else {
+        ()
+    }
+}
+```
+
+The `skip_if` condition must evaluate to a compile-time constant `bool`. Even
+when the condition evaluates to `true`, the test body is still typechecked,
+while execution and IR conversion are skipped and the test is reported as
+`SKIPPED`.
+
 ### QuickCheck
 
 QuickCheck is a [testing framework concept][hughes-paper] founded on

@@ -544,6 +544,16 @@ TEST_F(AstTest, AttributeToStringTabulateDomains) {
   EXPECT_EQ(attr->ToString(), "#[tabulate(domains = `u32:0..4`)]");
 }
 
+TEST_F(AstTest, AttributeToStringAndChildrenSkipIf) {
+  Number* cond =
+      m.Make<Number>(fake_span, "true", NumberKind::kBool, /*type=*/nullptr);
+  Attribute* attr = m.Make<Attribute>(
+      fake_span, fake_span, AttributeData(AttributeKind::kSkipIf, {}), cond);
+  EXPECT_EQ(attr->ToString(), "#[skip_if(true)]");
+  EXPECT_THAT(attr->GetChildren(/*want_types=*/false),
+              testing::ElementsAre(cond));
+}
+
 TEST_F(AstTest, IsIrrefutablePatternWithRestOfTuple) {
   NameDef* x =
       m.Make<NameDef>(fake_span, std::string("x"), /*definer=*/nullptr);

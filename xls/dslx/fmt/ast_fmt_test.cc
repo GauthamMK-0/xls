@@ -4696,5 +4696,56 @@ pub fn f(x: u32, flag: bool) -> u32 {
 )");
 }
 
+TEST_F(ModuleFmtTest, SkipIfAttributeOnTestFunction) {
+  DoFmt(R"(enum PipelineMode : u2 {
+    Bypass = 0,
+    Pipelined = 1,
+}
+
+const MODE: PipelineMode = PipelineMode::Bypass;
+
+#[test]
+#[skip_if(MODE != PipelineMode::Bypass)]
+fn my_test() { () }
+)");
+}
+
+TEST_F(ModuleFmtTest, SkipIfAttributeBeforeTestFunction) {
+  DoFmt(R"(const FLAG: bool = true;
+
+#[skip_if(FLAG)]
+#[test]
+fn my_test() { () }
+)");
+}
+
+TEST_F(ModuleFmtTest, SkipIfAttributeOnTestProc) {
+  DoFmt(R"(const FLAG: bool = true;
+
+#[test_proc]
+#[skip_if(FLAG)]
+proc MyTestProc {
+    terminator: chan<bool> out;
+
+    config(terminator: chan<bool> out) { (terminator,) }
+
+    init { () }
+
+    next(state: ()) { send(join(), terminator, true); }
+}
+)");
+}
+
+TEST_F(ModuleFmtTest, SkipIfAttributeOnImplTestProc) {
+  DoFmt(R"(const FLAG: bool = true;
+
+#[test]
+#[skip_if(FLAG)]
+proc MyTestProc {
+    terminator: chan<bool> out,
+}
+)");
+}
+
 }  // namespace
 }  // namespace xls::dslx

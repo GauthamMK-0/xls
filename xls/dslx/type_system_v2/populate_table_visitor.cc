@@ -40,6 +40,7 @@
 #include "absl/strings/substitute.h"
 #include "absl/types/optional_ref.h"
 #include "absl/types/variant.h"
+#include "xls/common/attribute_data.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/common/visitor.h"
@@ -53,6 +54,7 @@
 #include "xls/dslx/frontend/builtins_metadata.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/frontend/proc.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/import_routines.h"
 #include "xls/dslx/status_payload_utils.h"
@@ -1482,6 +1484,7 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
   }
 
   absl::Status HandleProcDef(const ProcDef* node) override {
+    XLS_RETURN_IF_ERROR(PopulateSkipIfAttribute(node));
     return HandleStructDefBaseInternal(node);
   }
 
@@ -1515,9 +1518,16 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
   absl::Status HandleTestFunction(const TestFunction* node) override {
     VLOG(5) << "HandleTestFunction: " << node->ToString();
     in_test_fn_ = true;
+    XLS_RETURN_IF_ERROR(PopulateSkipIfAttribute(&node->fn()));
     XLS_RETURN_IF_ERROR(DefaultHandler(node));
     in_test_fn_ = false;
     return absl::OkStatus();
+  }
+
+  absl::Status HandleTestProc(const TestProc* node) override {
+    VLOG(5) << "HandleTestProc: " << node->ToString();
+    XLS_RETURN_IF_ERROR(PopulateSkipIfAttribute(node->proc()));
+    return DefaultHandler(node);
   }
 
   absl::Status HandleFunction(const Function* node) override {
@@ -2355,6 +2365,19 @@ class PopulateInferenceTableVisitor : public PopulateTableVisitor,
       }
     }
     return absl::OkStatus();
+  }
+
+  absl::Status PopulateSkipIfAttribute(const AstNode* attributed_node) {
+    std::optional<Attribute*> skip_if =
+        GetAttribute(attributed_node, AttributeKind::kSkipIf);
+    if (!skip_if.has_value() || !(*skip_if)->expr().has_value()) {
+      return absl::OkStatus();
+    }
+    Expr* expr = *(*skip_if)->expr();
+    XLS_RETURN_IF_ERROR(table_.SetTypeAnnotation(
+        expr, CreateBoolAnnotation(module_, expr->span())));
+    XLS_RETURN_IF_ERROR(DefineAndSetTypeVariable(expr, "skip_if_cond"));
+    return expr->Accept(this);
   }
 
   Module& module_;

@@ -1757,5 +1757,61 @@ impl Top {
 )",
               TypecheckSucceeds(::testing::_));
 }
+
+TEST(TypecheckV2ProcTest, SkipIfOnLegacyTestProc) {
+  EXPECT_THAT(R"(
+const SKIP: bool = true;
+
+#[test_proc]
+#[skip_if(SKIP)]
+proc MyTestProc {
+    terminator: chan<bool> out;
+    config(terminator: chan<bool> out) { (terminator,) }
+    init { () }
+    next(state: ()) {
+        let tok = send(join(), terminator, true);
+    }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2ProcTest, SkipIfOnImplTestProc) {
+  EXPECT_THAT(R"(
+const SKIP: bool = false;
+
+#[test]
+#[skip_if(!SKIP)]
+proc MyTestProc {
+    terminator: chan<bool> out,
+}
+
+impl MyTestProc {
+    fn new(terminator: chan<bool> out) -> Self {
+        Self { terminator }
+    }
+    fn next(self) {
+        send(join(), self.terminator, true);
+    }
+}
+)",
+              TypecheckSucceeds(::testing::_));
+}
+
+TEST(TypecheckV2ProcTest, SkipIfNonBoolOnTestProcFails) {
+  EXPECT_THAT(TypecheckV2(R"(
+#[test_proc]
+#[skip_if(u32:1)]
+proc MyTestProc {
+    terminator: chan<bool> out;
+    config(terminator: chan<bool> out) { (terminator,) }
+    init { () }
+    next(state: ()) {
+        let tok = send(join(), terminator, true);
+    }
+}
+)"),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
 }  // namespace
 }  // namespace xls::dslx

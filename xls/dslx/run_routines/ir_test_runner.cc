@@ -230,6 +230,10 @@ absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>> MakeRunner(
         module->FindMemberWithName(name);
     XLS_RET_CHECK(maybe_member);
     auto member = *maybe_member;
+    XLS_ASSIGN_OR_RETURN(bool skip_test, ShouldSkipTest(*member, type_info));
+    if (skip_test) {
+      continue;
+    }
     PackageConversionData package_data{
         .package = std::make_unique<Package>(
             absl::StrFormat("%s_test_for_package_%s", name, module->name()))};

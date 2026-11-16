@@ -257,6 +257,7 @@ absl::StatusOr<AttributeKind> ParseAttributeKind(Token token,
       {"channel_strictness", AttributeKind::kChannelStrictness},
       {"channel_flow_control", AttributeKind::kChannelFlowControl},
       {"tabulate", AttributeKind::kTabulate},
+      {"skip_if", AttributeKind::kSkipIf},
   };
 
   const auto it = map->find(token.GetStringValue());
@@ -545,7 +546,7 @@ absl::StatusOr<std::unique_ptr<Module>> Parser::ParseModule(
         module_member_start_pos = hash->span().start();
       }
       XLS_ASSIGN_OR_RETURN(Attribute * attribute,
-                           ParseAttribute(hash->span().start()));
+                           ParseAttribute(hash->span().start(), bindings));
       pending_attributes.push_back(attribute);
       continue;
     }
@@ -941,7 +942,8 @@ Parser::ParseAttributeArguments() {
   return result;
 }
 
-absl::StatusOr<Attribute*> Parser::ParseAttribute(const Pos& hash_pos) {
+absl::StatusOr<Attribute*> Parser::ParseAttribute(const Pos& hash_pos,
+                                                  Bindings* bindings) {
   // Ignore the Rust "bang" in Attribute declarations, i.e. we don't yet have
   // a use for inner vs. outer attributes, but that day will likely come.
   XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOBrack));
@@ -953,18 +955,35 @@ absl::StatusOr<Attribute*> Parser::ParseAttribute(const Pos& hash_pos) {
                        ParseAttributeKind(attribute_tok, file_table()));
   std::vector<AttributeData::Argument> args;
   std::optional<Span> arg_span;
+  std::optional<Expr*> expr;
 
   XLS_ASSIGN_OR_RETURN(bool has_args, TryDropToken(TokenKind::kOParen));
   if (has_args) {
     Pos arg_start = GetPos();
-    XLS_ASSIGN_OR_RETURN(args, ParseAttributeArguments());
+    if (kind == AttributeKind::kSkipIf) {
+      if (bindings == nullptr) {
+        return ParseErrorStatus(
+            Span(hash_pos, GetPos()),
+            "#[skip_if(...)] is only valid on top-level test items.");
+      }
+      XLS_ASSIGN_OR_RETURN(expr, ParseExpression(*bindings));
+    } else {
+      XLS_ASSIGN_OR_RETURN(args, ParseAttributeArguments());
+    }
     arg_span = Span(arg_start, GetPos());
     XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kCParen));
+  } else if (kind == AttributeKind::kSkipIf) {
+    return ParseErrorStatus(
+        Span(hash_pos, GetPos()),
+        "#[skip_if(...)] requires a boolean condition expression.");
   }
 
   XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kCBrack));
-  return module_->Make<Attribute>(Span(hash_pos, GetPos()), arg_span,
-                                  AttributeData(kind, std::move(args)));
+  Attribute* attribute =
+      module_->Make<Attribute>(Span(hash_pos, GetPos()), arg_span,
+                               AttributeData(kind, std::move(args)), expr);
+  attribute->SetParentage();
+  return attribute;
 }
 
 absl::StatusOr<QuickCheckTestCases> Parser::GetQuickCheckTestCases(
@@ -1045,6 +1064,10 @@ absl::Status Parser::UnsupportedAttributeError(const Attribute& attribute) {
     case AttributeKind::kTest:
       return ParseErrorStatus(
           span, "#[test] is only valid on a function or impl-style proc.");
+    case AttributeKind::kSkipIf:
+      return ParseErrorStatus(
+          span,
+          "#[skip_if(...)] is only valid on a test function or test proc.");
     default:
       return ParseErrorStatus(
           span, absl::StrCat("Unsupported attribute: ", attribute.ToString()));
@@ -1107,6 +1130,7 @@ absl::StatusOr<ModuleMember> Parser::ApplyFunctionAttributes(
   bool is_test = false;
   Attribute* fuzz_test_attribute = nullptr;
   Attribute* tabulate_attribute = nullptr;
+  Attribute* skip_if_attribute = nullptr;
   std::optional<QuickCheckTestCases> quickcheck_test_cases;
   std::vector<std::string> test_attributes;
 
@@ -1149,9 +1173,19 @@ absl::StatusOr<ModuleMember> Parser::ApplyFunctionAttributes(
         tabulate_attribute = next;
         break;
 
+      case AttributeKind::kSkipIf:
+        skip_if_attribute = next;
+        break;
+
       default:
         return UnsupportedAttributeError(*next);
     }
+  }
+
+  if (skip_if_attribute != nullptr && !is_test) {
+    return ParseErrorStatus(
+        *skip_if_attribute->GetSpan(),
+        "#[skip_if(...)] is only valid on a #[test] function.");
   }
 
   if (test_attributes.size() > 1) {
@@ -1336,6 +1370,7 @@ template absl::Status Parser::ApplyTypeAttributes<SumDef>(
 absl::StatusOr<ModuleMember> Parser::ApplyProcAttributes(
     Proc* p, std::vector<Attribute*> attributes) {
   bool is_test = false;
+  Attribute* skip_if_attribute = nullptr;
   std::optional<std::string> expected_fail_label;
 
   for (Attribute* next : attributes) {
@@ -1367,9 +1402,19 @@ absl::StatusOr<ModuleMember> Parser::ApplyProcAttributes(
         break;
       }
 
+      case AttributeKind::kSkipIf:
+        skip_if_attribute = next;
+        break;
+
       default:
         return UnsupportedAttributeError(*next);
     }
+  }
+
+  if (skip_if_attribute != nullptr && !is_test) {
+    return ParseErrorStatus(
+        *skip_if_attribute->GetSpan(),
+        "#[skip_if(...)] is only valid on a #[test_proc] proc.");
   }
 
   p->SetAttributes(attributes);
@@ -1386,6 +1431,8 @@ absl::StatusOr<ModuleMember> Parser::ApplyProcAttributes(
 
 absl::Status Parser::ApplyProcDefAttributes(
     ProcDef* p, std::vector<Attribute*> attributes) {
+  bool is_test = false;
+  Attribute* skip_if_attribute = nullptr;
   for (Attribute* next : attributes) {
     if (next->attribute_kind() == AttributeKind::kCfg) {
       XLS_ASSIGN_OR_RETURN(bool test_utility, IsTestConfig(*next));
@@ -1394,10 +1441,22 @@ absl::Status Parser::ApplyProcDefAttributes(
       }
       continue;
     }
-    if (next->attribute_kind() != AttributeKind::kDerive &&
-        next->attribute_kind() != AttributeKind::kTest) {
+    if (next->attribute_kind() == AttributeKind::kTest) {
+      is_test = true;
+      continue;
+    }
+    if (next->attribute_kind() == AttributeKind::kSkipIf) {
+      skip_if_attribute = next;
+      continue;
+    }
+    if (next->attribute_kind() != AttributeKind::kDerive) {
       return UnsupportedAttributeError(*next);
     }
+  }
+
+  if (skip_if_attribute != nullptr && !is_test) {
+    return ParseErrorStatus(*skip_if_attribute->GetSpan(),
+                            "#[skip_if(...)] is only valid on a #[test] proc.");
   }
 
   p->SetAttributes(attributes);

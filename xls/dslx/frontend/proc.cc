@@ -27,6 +27,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
+#include "xls/common/attribute_data.h"
 #include "xls/common/indent.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/ast_node.h"
@@ -161,11 +162,20 @@ std::string ProcLike::ToString() const {
 TestProc::~TestProc() = default;
 
 std::string TestProc::ToString() const {
+  std::string attr_str;
   if (expected_fail_label_.has_value()) {
-    return absl::StrFormat("#[test_proc(expected_fail_label=\"%s\")]\n%s",
-                           *expected_fail_label_, proc_->ToString());
+    absl::StrAppendFormat(&attr_str,
+                          "#[test_proc(expected_fail_label=\"%s\")]\n",
+                          *expected_fail_label_);
+  } else {
+    absl::StrAppend(&attr_str, "#[test_proc]\n");
   }
-  return absl::StrFormat("#[test_proc]\n%s", proc_->ToString());
+  if (std::optional<Attribute*> skip_if =
+          GetAttribute(proc_, AttributeKind::kSkipIf);
+      skip_if.has_value()) {
+    absl::StrAppend(&attr_str, (*skip_if)->ToString(), "\n");
+  }
+  return absl::StrCat(attr_str, proc_->ToString());
 }
 
 // -- class ProcMember

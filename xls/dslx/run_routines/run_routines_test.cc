@@ -38,6 +38,7 @@
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/run_routines/ir_test_runner.h"
 #include "xls/dslx/run_routines/run_comparator.h"
+#include "xls/dslx/run_routines/test_xml.h"
 #include "xls/dslx/type_system/type.h"
 #include "xls/dslx/virtualizable_file_system.h"
 #include "xls/dslx/warning_kind.h"
@@ -1353,6 +1354,251 @@ fn test_pass_through() {
       TestResultData result,
       ParseAndTest(kProgram, "test", "test.x", ParseAndTestOptions{}));
   EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
+}
+
+TEST_P(ParseAndTestTest, SkipIfTestFunctionsWithConfiguredValue) {
+  constexpr std::string_view kProgram = R"(
+enum PipelineMode : u2 {
+  Bypass = 0,
+  Pipelined = 1,
+}
+
+const MODE: PipelineMode =
+    configured_value_or<PipelineMode>("mode", PipelineMode::Bypass);
+
+#[test]
+#[skip_if(MODE != PipelineMode::Bypass)]
+fn test_bypass() {
+  assert!(false, "should_not_run");
+}
+
+#[test]
+#[skip_if(MODE != PipelineMode::Pipelined)]
+fn test_pipelined() {
+  assert_eq(u32:1, u32:1);
+}
+)";
+
+  ParseAndTestOptions options;
+  options.parse_and_typecheck_options.configured_values = {
+      "mode:PipelineMode::Pipelined"};
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 2, 1, 0));
+
+  test_xml::TestSuites suites = result.ToXmlSuites("test");
+  ASSERT_EQ(suites.test_suites.size(), 1);
+  EXPECT_EQ(suites.counts.skipped, 1);
+  ASSERT_EQ(suites.test_suites[0].test_cases.size(), 2);
+  EXPECT_EQ(suites.test_suites[0].test_cases[0].name, "test_bypass");
+  EXPECT_EQ(suites.test_suites[0].test_cases[0].status,
+            test_xml::RunStatus::kNotRun);
+  EXPECT_EQ(suites.test_suites[0].test_cases[0].result,
+            test_xml::RunResult::kSkipped);
+  EXPECT_EQ(suites.test_suites[0].test_cases[1].name, "test_pipelined");
+  EXPECT_EQ(suites.test_suites[0].test_cases[1].status,
+            test_xml::RunStatus::kRun);
+  EXPECT_EQ(suites.test_suites[0].test_cases[1].result,
+            test_xml::RunResult::kCompleted);
+}
+
+TEST_P(ParseAndTestTest, SkipIfLegacyTestProc) {
+  constexpr std::string_view kProgram = R"(
+enum PipelineMode : u2 {
+  Bypass = 0,
+  Pipelined = 1,
+}
+
+const MODE: PipelineMode =
+    configured_value_or<PipelineMode>("mode", PipelineMode::Bypass);
+
+#[test_proc]
+#[skip_if(MODE != PipelineMode::Bypass)]
+proc test_bypass_proc {
+  terminator: chan<bool> out;
+  config(terminator: chan<bool> out) { (terminator,) }
+  init { () }
+  next(state: ()) {
+    assert!(false, "should_not_run");
+    send(join(), terminator, true);
+  }
+}
+
+#[test_proc]
+#[skip_if(MODE != PipelineMode::Pipelined)]
+proc test_pipelined_proc {
+  terminator: chan<bool> out;
+  config(terminator: chan<bool> out) { (terminator,) }
+  init { () }
+  next(state: ()) {
+    send(join(), terminator, true);
+  }
+}
+)";
+
+  ParseAndTestOptions options;
+  options.parse_and_typecheck_options.configured_values = {
+      "mode:PipelineMode::Pipelined"};
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 2, 1, 0));
+}
+
+TEST_P(ParseAndTestTest, SkipIfImplTestProcAndTransformedTestFunction) {
+  if (GetParam() == RunnerType::kIrInterpreter ||
+      GetParam() == RunnerType::kIrJit) {
+    GTEST_SKIP()
+        << "New-style proc tests only supported with proc-scoped channels";
+  }
+  constexpr std::string_view kProgram = R"(
+proc Helper {}
+
+impl Helper {
+  fn new() -> Self { Helper {} }
+}
+
+#[test]
+#[skip_if(true)]
+proc ImplTestProc {
+  terminator: chan<bool> out,
+}
+
+impl ImplTestProc {
+  fn new(terminator: chan<bool> out) -> Self {
+    ImplTestProc { terminator }
+  }
+  fn next(self) {
+    assert!(false, "should_not_run");
+    send(join(), self.terminator, true);
+  }
+}
+
+#[test]
+#[skip_if(true)]
+fn transformed_skipped_test() {
+  let _h = Helper::new().spawn();
+  assert!(false, "should_not_run");
+}
+
+#[test]
+#[skip_if(false)]
+fn transformed_active_test() {
+  let _h = Helper::new().spawn();
+  assert_eq(u32:2 + u32:2, u32:4);
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      ParseAndTest(kProgram, "test", "test.x", ParseAndTestOptions{}));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 3, 2, 0));
+}
+
+TEST_P(ParseAndTestTest, SkipIfAllTestsSkipped) {
+  constexpr std::string_view kProgram = R"(
+#[test]
+#[skip_if(true)]
+fn test_one() {
+  assert!(false, "should_not_run");
+}
+
+#[test_proc]
+#[skip_if(true)]
+proc test_two {
+  terminator: chan<bool> out;
+  config(terminator: chan<bool> out) { (terminator,) }
+  init { () }
+  next(state: ()) {
+    assert!(false, "should_not_run");
+    send(join(), terminator, true);
+  }
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      ParseAndTest(kProgram, "test", "test.x", ParseAndTestOptions{}));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 2, 2, 0));
+}
+
+TEST_P(ParseAndTestTest, SkipIfCombinedWithTestFilter) {
+  constexpr std::string_view kProgram = R"(
+#[test]
+#[skip_if(true)]
+fn test_one() {
+  assert!(false, "should_not_run");
+}
+
+#[test]
+#[skip_if(false)]
+fn test_two() {
+  assert_eq(u32:1, u32:1);
+}
+)";
+
+  const RE2 test_filter(".*_two");
+  ParseAndTestOptions options;
+  options.test_filter = &test_filter;
+  XLS_ASSERT_OK_AND_ASSIGN(TestResultData result,
+                           ParseAndTest(kProgram, "test", "test.x", options));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 2, 1, 0));
+}
+
+TEST_P(ParseAndTestTest, SkipIfOnTestProcWithExpectedFailLabel) {
+  if (GetParam() != RunnerType::kDslxInterpreter) {
+    GTEST_SKIP() << "expected_fail_label attribute is only supported on dslx "
+                    "interpreter";
+  }
+  constexpr std::string_view kProgram = R"(
+#[test_proc(expected_fail_label = "my_fail")]
+#[skip_if(true)]
+proc test_expected_fail {
+  terminator: chan<bool> out;
+  config(terminator: chan<bool> out) { (terminator,) }
+  init { () }
+  next(state: ()) {
+    send(join(), terminator, true);
+  }
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData result,
+      ParseAndTest(kProgram, "test", "test.x", ParseAndTestOptions{}));
+  EXPECT_THAT(result, IsTestResult(TestResult::kAllPassed, 1, 1, 0));
+}
+
+TEST_P(ParseAndTestTest, SkipIfWithWidthAndConstIf) {
+  constexpr std::string_view kProgram = R"(
+const DATA_WIDTH: u32 = configured_value_or<u32>("data_width", u32:8);
+
+#[test]
+#[skip_if(DATA_WIDTH < u32:32)]
+fn test_wide_adder() {
+  const if DATA_WIDTH >= u32:32 {
+    let x = uN[DATA_WIDTH]:0xFFFF_FFFF;
+    assert_eq(x + uN[DATA_WIDTH]:1, uN[DATA_WIDTH]:0);
+  } else {
+    ()
+  }
+}
+)";
+
+  ParseAndTestOptions narrow_options;
+  narrow_options.parse_and_typecheck_options.configured_values = {
+      "data_width:u32:8"};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData narrow_result,
+      ParseAndTest(kProgram, "test", "test.x", narrow_options));
+  EXPECT_THAT(narrow_result, IsTestResult(TestResult::kAllPassed, 1, 1, 0));
+
+  ParseAndTestOptions wide_options;
+  wide_options.parse_and_typecheck_options.configured_values = {
+      "data_width:u32:32"};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TestResultData wide_result,
+      ParseAndTest(kProgram, "test", "test.x", wide_options));
+  EXPECT_THAT(wide_result, IsTestResult(TestResult::kAllPassed, 1, 0, 0));
 }
 
 INSTANTIATE_TEST_SUITE_P(RunRoutinesTest, RunRoutinesTest,

@@ -694,9 +694,18 @@ std::string BinopKindToString(BinopKind kind) {
 
 // -- class Attribute
 
+std::vector<AstNode*> Attribute::GetChildren(bool want_types) const {
+  if (expr_.has_value()) {
+    return {*expr_};
+  }
+  return {};
+}
+
 std::string Attribute::ToString() const {
   std::string args;
-  if (!attribute_data_.args().empty()) {
+  if (expr_.has_value()) {
+    args = absl::StrFormat("(%s)", (*expr_)->ToString());
+  } else if (!attribute_data_.args().empty()) {
     absl::StrAppend(&args, "(");
     std::vector<std::string> pieces;
     for (const AttributeData::Argument& next : attribute_data_.args()) {
@@ -2137,9 +2146,16 @@ std::string StructDef::ToString() const {
 // -- class ProcDef
 
 std::string ProcDef::ToString() const {
-  return ToStringWithEntityKeywordAndAttribute(
-      "proc",
-      GetAttribute(this, AttributeKind::kTest).has_value() ? "#[test]\n" : "");
+  std::string attr_str;
+  if (GetAttribute(this, AttributeKind::kTest).has_value()) {
+    absl::StrAppend(&attr_str, "#[test]\n");
+  }
+  if (std::optional<Attribute*> skip_if =
+          GetAttribute(this, AttributeKind::kSkipIf);
+      skip_if.has_value()) {
+    absl::StrAppend(&attr_str, (*skip_if)->ToString(), "\n");
+  }
+  return ToStringWithEntityKeywordAndAttribute("proc", attr_str);
 }
 
 // -- class Impl
@@ -2851,6 +2867,16 @@ Function::LambdaReturnTypeParametrics() const {
 // -- class TestFunction
 
 TestFunction::~TestFunction() = default;
+
+std::string TestFunction::ToString() const {
+  std::string attr_str = "#[test]\n";
+  if (std::optional<Attribute*> skip_if =
+          GetAttribute(&fn_, AttributeKind::kSkipIf);
+      skip_if.has_value()) {
+    absl::StrAppend(&attr_str, (*skip_if)->ToString(), "\n");
+  }
+  return absl::StrCat(attr_str, fn_.ToString());
+}
 
 // -- class FuzzTestFunction
 

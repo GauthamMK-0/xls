@@ -675,7 +675,8 @@ class Parser : public TokenParser {
   // Parses DSLX attributes, analogous to Rust's attributes. Currently this is
   // only used for attributes on top-level module members, not expressions or
   // modules themselves.
-  absl::StatusOr<Attribute*> ParseAttribute(const Pos& hash_pos);
+  absl::StatusOr<Attribute*> ParseAttribute(const Pos& hash_pos,
+                                            Bindings* bindings = nullptr);
 
   absl::StatusOr<ChannelConfig> ParseExprAttribute(Bindings& bindings,
                                                    const Pos& hash_pos);

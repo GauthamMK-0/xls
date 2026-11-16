@@ -224,6 +224,16 @@ absl::StatusOr<ProcDefAndTypeAnnotation> CreateProcDef(const Function& fn,
       new_module.Make<Attribute>(fn.span(), /*arg_span=*/std::nullopt,
                                  AttributeData(AttributeKind::kTest,
                                                /*args=*/{})));
+  if (std::optional<Attribute*> skip_if_attr =
+          GetAttribute(&fn, AttributeKind::kSkipIf);
+      skip_if_attr.has_value()) {
+    XLS_ASSIGN_OR_RETURN(
+        auto attr_old_to_new,
+        CloneAstAndGetAllPairs(*skip_if_attr, &new_module,
+                               PreserveTypeDefinitionsReplacer));
+    proc_def->AddAttribute(
+        absl::down_cast<Attribute*>(attr_old_to_new.at(*skip_if_attr)));
+  }
 
   // Create the terminator channel on the ProcDef.
   NameDef* terminator_channel_name =

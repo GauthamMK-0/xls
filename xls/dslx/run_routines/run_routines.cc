@@ -45,6 +45,7 @@
 #include "absl/types/optional_ref.h"
 #include "absl/types/span.h"
 #include "re2/re2.h"
+#include "xls/common/attribute_data.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/data_structures/inline_bitmap.h"
@@ -59,9 +60,11 @@
 #include "xls/dslx/error_printer.h"
 #include "xls/dslx/errors.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_node.h"
 #include "xls/dslx/frontend/bindings.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/frontend/proc.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/interp_value_utils.h"
@@ -339,7 +342,8 @@ int64_t TestResultData::GetFailedCount() const {
 int64_t TestResultData::GetSkippedCount() const {
   return std::count_if(
       test_cases_.begin(), test_cases_.end(), [](const auto& test_case) {
-        return test_case.result == test_xml::RunResult::kFiltered;
+        return test_case.result == test_xml::RunResult::kFiltered ||
+               test_case.result == test_xml::RunResult::kSkipped;
       });
 }
 
@@ -1076,6 +1080,22 @@ absl::StatusOr<ParseAndTestResult> AbstractTestRunner::ParseAndTest(
       continue;
     }
 
+    XLS_ASSIGN_OR_RETURN(bool skip_test,
+                         ShouldSkipTest(*member, tm->type_info));
+    if (skip_test) {
+      std::cerr << "[       SKIPPED ] " << test_name << '\n';
+      auto test_case_end = absl::Now();
+      result.AddTestCase(test_xml::TestCase{
+          .name = test_name,
+          .file = std::string{start_pos.GetFilename(import_data.file_table())},
+          .line = start_pos.GetHumanLineno(),
+          .status = test_xml::RunStatus::kNotRun,
+          .result = test_xml::RunResult::kSkipped,
+          .time = test_case_end - test_case_start,
+          .timestamp = test_case_start});
+      continue;
+    }
+
     std::cerr << "[ RUN UNITTEST  ] " << test_name << '\n';
     RunResult out;
     BytecodeInterpreterOptions interpreter_options;
@@ -1171,6 +1191,29 @@ std::string_view TestResultToString(TestResult tr) {
       return "parse-or-typecheck-error";
   }
   LOG(FATAL) << "Invalid test result value: " << static_cast<int>(tr);
+}
+
+absl::StatusOr<bool> ShouldSkipTest(const ModuleMember& member,
+                                    const TypeInfo* type_info) {
+  const AstNode* attributed_node = nullptr;
+  if (std::holds_alternative<TestFunction*>(member)) {
+    attributed_node = &std::get<TestFunction*>(member)->fn();
+  } else if (std::holds_alternative<TestProc*>(member)) {
+    attributed_node = std::get<TestProc*>(member)->proc();
+  } else if (std::holds_alternative<ProcDef*>(member)) {
+    attributed_node = std::get<ProcDef*>(member);
+  } else {
+    return false;
+  }
+
+  std::optional<Attribute*> skip_if =
+      GetAttribute(attributed_node, AttributeKind::kSkipIf);
+  if (!skip_if.has_value() || !(*skip_if)->expr().has_value()) {
+    return false;
+  }
+  XLS_ASSIGN_OR_RETURN(InterpValue value,
+                       type_info->GetConstExpr(*(*skip_if)->expr()));
+  return value.IsTrue();
 }
 
 }  // namespace xls::dslx

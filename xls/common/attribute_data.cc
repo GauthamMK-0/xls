@@ -48,6 +48,8 @@ std::string AttributeKindToString(AttributeKind kind) {
       return "trivial_next";
     case AttributeKind::kTabulate:
       return "tabulate";
+    case AttributeKind::kSkipIf:
+      return "skip_if";
   }
 }
 

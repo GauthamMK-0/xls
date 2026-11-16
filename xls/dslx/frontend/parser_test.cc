@@ -6560,4 +6560,170 @@ struct S {
                        HasSubstr("#[tabulate] is only valid on a function.")));
 }
 
+TEST_F(ParserTest, SkipIfAttributeOnTestFunction) {
+  constexpr std::string_view kProgram = R"(
+const FLAG: bool = true;
+
+#[test]
+#[skip_if(FLAG)]
+fn my_test() {
+    assert_eq(u32:1, u32:1);
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module, Parse(kProgram));
+  XLS_ASSERT_OK_AND_ASSIGN(TestFunction * tf, module->GetTest("my_test"));
+  std::optional<Attribute*> skip_if =
+      GetAttribute(&tf->fn(), AttributeKind::kSkipIf);
+  ASSERT_TRUE(skip_if.has_value());
+  ASSERT_TRUE((*skip_if)->expr().has_value());
+  EXPECT_EQ((*skip_if)->ToString(), "#[skip_if(FLAG)]");
+  EXPECT_TRUE(absl::StrContains(tf->ToString(), "#[skip_if(FLAG)]"));
+}
+
+TEST_F(ParserTest, SkipIfAttributeBeforeTestFunction) {
+  constexpr std::string_view kProgram = R"(
+enum PipelineMode : u2 { Bypass = 0, Pipelined = 1 }
+const MODE: PipelineMode = PipelineMode::Bypass;
+
+#[skip_if(MODE != PipelineMode::Bypass)]
+#[test]
+fn test_bypass() {
+    ()
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module, Parse(kProgram));
+  XLS_ASSERT_OK_AND_ASSIGN(TestFunction * tf, module->GetTest("test_bypass"));
+  std::optional<Attribute*> skip_if =
+      GetAttribute(&tf->fn(), AttributeKind::kSkipIf);
+  ASSERT_TRUE(skip_if.has_value());
+  EXPECT_EQ((*skip_if)->ToString(), "#[skip_if(MODE != PipelineMode::Bypass)]");
+}
+
+TEST_F(ParserTest, SkipIfAttributeOnLegacyTestProc) {
+  constexpr std::string_view kProgram = R"(
+const SKIP: bool = true;
+
+#[test_proc(expected_fail_label = "err")]
+#[skip_if(SKIP)]
+proc my_test_proc {
+    terminator: chan<bool> out;
+    config(terminator: chan<bool> out) { (terminator,) }
+    init { () }
+    next(state: ()) {
+        let tok = send(join(), terminator, true);
+    }
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module, Parse(kProgram));
+  std::optional<TestProc*> tp = module->GetMember<TestProc>("my_test_proc");
+  ASSERT_TRUE(tp.has_value());
+  std::optional<Attribute*> skip_if =
+      GetAttribute((*tp)->proc(), AttributeKind::kSkipIf);
+  ASSERT_TRUE(skip_if.has_value());
+  EXPECT_EQ((*skip_if)->ToString(), "#[skip_if(SKIP)]");
+  EXPECT_TRUE(absl::StrContains((*tp)->ToString(), "#[skip_if(SKIP)]"));
+}
+
+TEST_F(ParserTest, SkipIfAttributeOnImplTestProc) {
+  constexpr std::string_view kProgram = R"(
+const SKIP: bool = false;
+
+#[test]
+#[skip_if(!SKIP)]
+proc my_impl_test_proc {
+    terminator: chan<bool> out,
+})";
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Module> module, Parse(kProgram));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ProcDef * pd, module->GetMemberOrError<ProcDef>("my_impl_test_proc"));
+  std::optional<Attribute*> skip_if = GetAttribute(pd, AttributeKind::kSkipIf);
+  ASSERT_TRUE(skip_if.has_value());
+  EXPECT_EQ((*skip_if)->ToString(), "#[skip_if(!SKIP)]");
+  EXPECT_TRUE(absl::StrContains(pd->ToString(), "#[skip_if(!SKIP)]"));
+}
+
+TEST_F(ParserTest, SkipIfAttributeMissingArgsFailure) {
+  constexpr std::string_view kProgram = R"(
+#[test]
+#[skip_if]
+fn my_test() { () })";
+  EXPECT_THAT(
+      Parse(kProgram),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("#[skip_if(...)] requires a boolean condition")));
+}
+
+TEST_F(ParserTest, SkipIfAttributeEmptyParensFailure) {
+  constexpr std::string_view kProgram = R"(
+#[test]
+#[skip_if()]
+fn my_test() { () })";
+  EXPECT_THAT(Parse(kProgram), StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST_F(ParserTest, SkipIfAttributeOnNonTestFunctionFailure) {
+  constexpr std::string_view kProgram = R"(
+#[skip_if(true)]
+fn f() { () })";
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("#[skip_if(...)] is only valid on a #[test] "
+                                 "function.")));
+}
+
+TEST_F(ParserTest, SkipIfAttributeOnQuickcheckFailure) {
+  constexpr std::string_view kProgram = R"(
+#[quickcheck]
+#[skip_if(true)]
+fn prop(x: u32) -> bool { x == x })";
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("#[skip_if(...)] is only valid on a #[test] "
+                                 "function.")));
+}
+
+TEST_F(ParserTest, SkipIfAttributeOnNonTestProcFailure) {
+  constexpr std::string_view kProgram = R"(
+#[skip_if(true)]
+proc p {
+    config() { () }
+    init { () }
+    next(state: ()) { () }
+})";
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("#[skip_if(...)] is only valid on a "
+                                 "#[test_proc] proc.")));
+}
+
+TEST_F(ParserTest, SkipIfAttributeOnNonTestImplProcFailure) {
+  constexpr std::string_view kProgram = R"(
+#[skip_if(true)]
+proc p {
+    c: chan<bool> out,
+})";
+  EXPECT_THAT(Parse(kProgram),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("#[skip_if(...)] is only valid on a #[test] "
+                                 "proc.")));
+}
+
+TEST_F(ParserTest, SkipIfAttributeDuplicateFailure) {
+  constexpr std::string_view kProgram = R"(
+#[test]
+#[skip_if(true)]
+#[skip_if(false)]
+fn my_test() { () })";
+  EXPECT_THAT(Parse(kProgram), StatusIs(absl::StatusCode::kInvalidArgument,
+                                        HasSubstr("Duplicate attribute:")));
+}
+
+TEST_F(ParserTest, SkipIfAttributeOnStructFailure) {
+  constexpr std::string_view kProgram = R"(
+#[skip_if(true)]
+struct S { x: u32 })";
+  EXPECT_THAT(
+      Parse(kProgram),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("#[skip_if(...)] is only valid on a test function "
+                         "or test proc.")));
+}
+
 }  // namespace xls::dslx

@@ -35,6 +35,7 @@
 #include "absl/strings/substitute.h"
 #include "absl/types/optional_ref.h"
 #include "absl/types/span.h"
+#include "xls/common/attribute_data.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/constexpr_evaluator.h"
@@ -1138,6 +1139,17 @@ class ConstantCollectorImpl : public ConstantCollector {
             &import_data_, ti, &warning_collector_,
             table_.GetParametricEnv(parametric_context), parent_as_match);
       }
+    } else if (parent_node && parent_node->kind() == AstNodeKind::kAttribute &&
+               absl::down_cast<const Attribute*>(parent_node)
+                       ->attribute_kind() == AttributeKind::kSkipIf) {
+      const Expr* expr = absl::down_cast<const Expr*>(node);
+      absl::StatusOr<InterpValue> value = ConstexprEvaluator::EvaluateToValue(
+          &import_data_, ti, &warning_collector_,
+          table_.GetParametricEnv(parametric_context), expr);
+      if (!value.ok()) {
+        return NotConstantErrorStatus(expr->span(), expr, file_table_);
+      }
+      ti->NoteConstExpr(expr, *value);
     }
 
     return absl::OkStatus();

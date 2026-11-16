@@ -27,11 +27,13 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "xls/common/attribute_data.h"
 #include "xls/common/status/matchers.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
 #include "xls/dslx/frontend/module.h"
+#include "xls/dslx/frontend/proc.h"
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/interp_value.h"
 #include "xls/dslx/ir_convert/convert_options.h"
@@ -381,6 +383,115 @@ pub const RESULT: u32 = dep_mod::DEP_VAL + ENTRY_VAL;
   XLS_ASSERT_OK_AND_ASSIGN(InterpValue result_val,
                            GetConstantValue(tm, "RESULT"));
   EXPECT_EQ(result_val, InterpValue::MakeU32(42));
+}
+
+TEST(ParseAndTypecheckTest, SkipIfWithConfiguredValueOrAndTransformer) {
+  ImportData import_data = CreateImportDataForTest();
+  constexpr std::string_view kProgram = R"(
+enum PipelineMode : u2 {
+    Bypass = 0,
+    Pipelined = 1,
+}
+
+const MODE: PipelineMode =
+    configured_value_or<PipelineMode>("mode", PipelineMode::Bypass);
+
+proc Helper {}
+impl Helper {
+    fn new() -> Self { Helper {} }
+}
+
+#[test]
+#[skip_if(MODE != PipelineMode::Bypass)]
+fn test_bypass() { () }
+
+#[test]
+#[skip_if(configured_value_or<bool>("skip_direct", false))]
+fn test_direct() {
+    let h = Helper::new();
+    h.spawn();
+}
+
+#[test_proc]
+#[skip_if(MODE == PipelineMode::Bypass)]
+proc test_proc_pipelined {
+    terminator: chan<bool> out;
+    config(terminator: chan<bool> out) { (terminator,) }
+    init { () }
+    next(state: ()) {
+        let tok = send(join(), terminator, true);
+    }
+}
+)";
+
+  ConvertOptions options;
+  options.configured_values = {
+      "mode:PipelineMode::Pipelined",
+      "skip_direct:true",
+  };
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kProgram, "test.x", "test_mod", &import_data,
+                        /*comments=*/nullptr, options));
+
+  EXPECT_TRUE(tm.warnings.warnings().empty());
+
+  XLS_ASSERT_OK_AND_ASSIGN(TestFunction * tf_bypass,
+                           tm.module->GetTest("test_bypass"));
+  Attribute* skip_bypass =
+      *GetAttribute(&tf_bypass->fn(), AttributeKind::kSkipIf);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue skip_bypass_val,
+                           tm.type_info->GetConstExpr(*skip_bypass->expr()));
+  EXPECT_EQ(skip_bypass_val, InterpValue::MakeBool(true));
+
+  // `test_direct` spawns a proc, so TestFunctionTransformer converted it to
+  // `ProcDef` `__test__proc__test_direct`.
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ProcDef * pd_direct,
+      tm.module->GetMemberOrError<ProcDef>("__test__proc__test_direct"));
+  Attribute* skip_direct = *GetAttribute(pd_direct, AttributeKind::kSkipIf);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue skip_direct_val,
+                           tm.type_info->GetConstExpr(*skip_direct->expr()));
+  EXPECT_EQ(skip_direct_val, InterpValue::MakeBool(true));
+
+  TestProc* tp_pipelined =
+      *tm.module->GetMember<TestProc>("test_proc_pipelined");
+  Attribute* skip_pipelined =
+      *GetAttribute(tp_pipelined->proc(), AttributeKind::kSkipIf);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue skip_pipelined_val,
+                           tm.type_info->GetConstExpr(*skip_pipelined->expr()));
+  EXPECT_EQ(skip_pipelined_val, InterpValue::MakeBool(false));
+}
+
+TEST(ParseAndTypecheckTest, SkipIfWithImportedConfiguredValue) {
+  ImportData import_data = MakeFakeImportData({
+      {"/root/dep_mod.x",
+       R"(pub const DATA_WIDTH: u32 =
+    configured_value_or<u32>("data_width", u32:16);)"},
+  });
+
+  constexpr std::string_view kEntryProgram = R"(
+import dep_mod;
+
+#[test]
+#[skip_if(dep_mod::DATA_WIDTH < u32:32)]
+fn test_wide_datapath() { () }
+)";
+
+  ConvertOptions options;
+  options.configured_values = {"data_width@dep_mod:u32:32"};
+  XLS_ASSERT_OK_AND_ASSIGN(
+      TypecheckedModule tm,
+      ParseAndTypecheck(kEntryProgram, "entry_mod.x", "entry_mod", &import_data,
+                        /*comments=*/nullptr, options));
+  EXPECT_TRUE(tm.warnings.warnings().empty());
+
+  XLS_ASSERT_OK_AND_ASSIGN(TestFunction * tf,
+                           tm.module->GetTest("test_wide_datapath"));
+  Attribute* skip_if = *GetAttribute(&tf->fn(), AttributeKind::kSkipIf);
+  XLS_ASSERT_OK_AND_ASSIGN(InterpValue skip_val,
+                           tm.type_info->GetConstExpr(*skip_if->expr()));
+  EXPECT_EQ(skip_val, InterpValue::MakeBool(false));
 }
 
 }  // namespace
